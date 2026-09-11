@@ -1,0 +1,3 @@
+[submodule "References/SEW-Geometric-Teleop"]
+	path = References/SEW-Geometric-Teleop
+	url = git@github.com:kczttm/SEW-Geometric-Teleop.git
