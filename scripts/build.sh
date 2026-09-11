@@ -4,11 +4,16 @@ set -eo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-source /opt/ros/jazzy/setup.bash
+source "$ROOT/scripts/env.sh" --no-overlay
 
 set -u
 
 cd "$ROOT"
+
+if ! python -m colcon --help >/dev/null 2>&1; then
+    echo "colcon not found; run scripts/setup_host.sh" >&2
+    exit 1
+fi
 
 PROJECT_PATHS=(
     src/mobile_bimanual_bringup
@@ -38,9 +43,17 @@ rosdep install \
     -r \
     -y
 
-colcon build \
+# Run colcon with the venv's Python so installed Python nodes use .venv.
+# CMake packages use the system Python so generated message extensions are
+# built against the system numpy, which is older than (and so compatible with)
+# the venv's.
+python -m colcon build \
+    --base-paths src \
     --symlink-install \
-    --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    --cmake-args \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DPYTHON_EXECUTABLE=/usr/bin/python3 \
+    --no-warn-unused-cli \
     --packages-select \
     openarm_description \
     openarm_hardware \

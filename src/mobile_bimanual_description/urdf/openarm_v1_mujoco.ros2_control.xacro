@@ -35,22 +35,15 @@
 
   <ros2_control name="OpenArmMujocoSystem" type="system">
 
+    <!--
+      Keep values on one line: Humble's ros2_control does not trim
+      whitespace from the plugin name or parameter values.
+    -->
     <hardware>
-      <plugin>
-        mujoco_ros2_control/MujocoSystemInterface
-      </plugin>
-
-      <param name="mujoco_model">
-        $(arg mujoco_model)
-      </param>
-
-      <param name="pids_config_file">
-        $(arg pids_config_file)
-      </param>
-
-      <param name="headless">
-        $(arg headless)
-      </param>
+      <plugin>mujoco_ros2_control/MujocoSystemInterface</plugin>
+      <param name="mujoco_model">$(arg mujoco_model)</param>
+      <param name="pids_config_file">$(arg pids_config_file)</param>
+      <param name="headless">$(arg headless)</param>
     </hardware>
 
     <!-- Left arm -->

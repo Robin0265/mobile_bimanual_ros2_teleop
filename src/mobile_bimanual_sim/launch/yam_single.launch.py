@@ -95,6 +95,9 @@ def generate_launch_description() -> LaunchDescription:
                     {"use_sim_time": True},
                     controllers_file,
                 ],
+                # Humble's controller manager reads ~/robot_description;
+                # point it at robot_state_publisher's topic.
+                remappings=[("~/robot_description", "robot_description")],
                 namespace="follower",
                 output="screen",
             ),
