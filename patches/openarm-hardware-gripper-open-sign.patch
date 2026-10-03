@@ -1,0 +1,75 @@
+diff --git a/openarm_hardware/include/openarm_hardware/openarm_simple_hardware.hpp b/openarm_hardware/include/openarm_hardware/openarm_simple_hardware.hpp
+index 60df58c..c911895 100644
+--- a/openarm_hardware/include/openarm_hardware/openarm_simple_hardware.hpp
++++ b/openarm_hardware/include/openarm_hardware/openarm_simple_hardware.hpp
+@@ -113,6 +113,9 @@ class OpenArmHW : public hardware_interface::SystemInterface {
+ 
+   double gripper_kp_ = GRIPPER_KP;
+   double gripper_kd_ = GRIPPER_KD;
++  // Motor direction that opens the gripper: -1 (stock: open = negative angle) or
++  // +1 for a mirrored gripper. Set by the "gripper_open_sign" hardware parameter.
++  double gripper_open_sign_ = -1.0;
+ 
+   // Configuration
+   std::string can_interface_;
+diff --git a/openarm_hardware/src/openarm_simple_hardware.cpp b/openarm_hardware/src/openarm_simple_hardware.cpp
+index 9321c4a..2fbe985 100644
+--- a/openarm_hardware/src/openarm_simple_hardware.cpp
++++ b/openarm_hardware/src/openarm_simple_hardware.cpp
+@@ -84,6 +84,13 @@ bool OpenArmHW::parse_config(const hardware_interface::HardwareInfo& info) {
+     if (it != info.hardware_parameters.end()) {
+       gripper_kd_ = std::stod(it->second);
+     }
++    it = info.hardware_parameters.find("gripper_open_sign");
++    if (it != info.hardware_parameters.end()) {
++      gripper_open_sign_ = std::stod(it->second) < 0.0 ? -1.0 : 1.0;
++    }
++    RCLCPP_INFO(rclcpp::get_logger("OpenArmHW"),
++                "Gripper opens toward %s motor angles",
++                gripper_open_sign_ < 0.0 ? "negative" : "positive");
+   }
+ 
+   RCLCPP_INFO(rclcpp::get_logger("OpenArmHW"),
+@@ -315,8 +322,10 @@ void OpenArmHW::return_to_zero() {
+ 
+   // Return gripper to zero if enabled
+   if (hand_) {
++    // Slightly past closed, against the opening direction
+     openarm_->get_gripper().mit_control_all(
+-        {{gripper_kp_, gripper_kd_, GRIPPER_JOINT_0_POSITION, 0.0, 0.0}});
++        {{gripper_kp_, gripper_kd_, -gripper_open_sign_ * GRIPPER_JOINT_0_POSITION,
++          0.0, 0.0}});
+   }
+   std::this_thread::sleep_for(std::chrono::microseconds(1000));
+   openarm_->recv_all();
+@@ -342,7 +351,8 @@ void OpenArmHW::return_to_zero() {
+ 
+     if (hand_) {
+       openarm_->get_gripper().mit_control_all(
+-          {{GRIPPER_KP, GRIPPER_KD, GRIPPER_JOINT_0_POSITION, 0.0, 0.0}});
++          {{GRIPPER_KP, GRIPPER_KD, -gripper_open_sign_ * GRIPPER_JOINT_0_POSITION,
++            0.0, 0.0}});
+     }
+ 
+     openarm_->recv_all();
+@@ -378,7 +388,9 @@ double OpenArmHW::joint_to_motor_radians(double joint_value) {
+     return joint_value;
+   } else {
+     // parallel_link (prismatic): 0-0.044m -> 0 to -1.0472 rad
+-    return (joint_value / GRIPPER_JOINT_0_POSITION) * GRIPPER_MOTOR_1_RADIANS;
++    // (+1.0472 rad for a mirrored gripper, gripper_open_sign_ = +1)
++    return (joint_value / GRIPPER_JOINT_0_POSITION) *
++           (-gripper_open_sign_ * GRIPPER_MOTOR_1_RADIANS);
+   }
+ }
+ 
+@@ -388,7 +400,8 @@ double OpenArmHW::motor_radians_to_joint(double motor_radians) {
+     return motor_radians;
+   } else {
+     // parallel_link (prismatic)
+-    return GRIPPER_JOINT_0_POSITION * (motor_radians / GRIPPER_MOTOR_1_RADIANS);
++    return GRIPPER_JOINT_0_POSITION *
++           (motor_radians / (-gripper_open_sign_ * GRIPPER_MOTOR_1_RADIANS));
+   }
+ }
+ 

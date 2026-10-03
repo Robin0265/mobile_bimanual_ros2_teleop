@@ -18,3 +18,5 @@ MUJOCO_LOG.TXT
 src/.venv
 *.gv
 *.pdf
+
+sessions/

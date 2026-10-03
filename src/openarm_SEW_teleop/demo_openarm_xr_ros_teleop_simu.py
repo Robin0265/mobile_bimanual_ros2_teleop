@@ -5,6 +5,7 @@ but joint targets go to the OpenArm's ros2_control controllers instead of an in-
 
     XR device (or CSV replay) -> OpenArmSEWSolver (+ SEW self-collision filter)
         -> joint limits + joint speed limit -> <namespace>/<side>_..._controller/commands
+    hand opening -> gripper range + speed limit -> <namespace>/<side>_gripper_controller/joint_trajectory
 
 The robot is selected with --target (see TARGETS). "sim" drives the MuJoCo follower from
     ros2 launch mobile_bimanual_sim openarm_bimanual.launch.py
@@ -12,8 +13,8 @@ The physical OpenArm uses the same ros2_control interface under /leader; add it 
 once the pipeline has been verified in sim and on fake hardware.
 
 Run from a shell that has sourced scripts/env.sh:
-    python src/openarm_SEW_teleop/demo_openarm_xr_ros_teleop.py --target sim
-    python src/openarm_SEW_teleop/demo_openarm_xr_ros_teleop.py --target sim \
+    python src/openarm_SEW_teleop/demo_openarm_xr_ros_teleop_simu.py --target sim
+    python src/openarm_SEW_teleop/demo_openarm_xr_ros_teleop_simu.py --target sim \
         --csv References/SEW-Geometric-Teleop/References/recordings/shoulder_jumping.csv
 """
 
@@ -37,10 +38,12 @@ from pathlib import Path
 import mujoco
 import mujoco.viewer
 import rclpy
+from builtin_interfaces.msg import Duration
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 _HERE = Path(__file__).resolve().parent
 _SEW_ROOT = _HERE.parents[1] / "References" / "SEW-Geometric-Teleop"
@@ -82,10 +85,15 @@ class RobotTarget:
     namespace: str
     arm_controller: str  # forward_command_controller name, formatted with side="right"/"left"
     max_joint_vel: float  # default joint speed limit, rad/s
-    has_grippers: bool = False
+    # joint_trajectory_controller on openarm_<side>_finger_joint1 (opening 0-0.044 m), or None
+    gripper_controller: str | None = None
+    max_gripper_vel: float = 0.1  # finger opening speed limit, m/s
 
     def command_topic(self, side):
         return f"{self.namespace}/{self.arm_controller.format(side=side)}/commands"
+
+    def gripper_topic(self, side):
+        return f"{self.namespace}/{self.gripper_controller.format(side=side)}/joint_trajectory"
 
     @property
     def joint_states_topic(self):
@@ -98,26 +106,38 @@ TARGETS = {
         namespace="/sim",
         arm_controller="{side}_arm_position_controller",
         max_joint_vel=2.0,
+        gripper_controller="{side}_gripper_controller",
     ),
 }
 
 
 class OpenArmROSInterface(Node):
-    """Publishes arm joint commands to ros2_control and tracks the measured joint positions."""
+    """
+    Publishes arm (and gripper) commands to ros2_control and tracks the measured joint
+    positions.
+    """
 
     def __init__(self, target):
         super().__init__("openarm_sew_teleop")
         self.joint_names = {
             side: [f"openarm_{side}_joint{i}" for i in range(1, 8)] for side in SIDES
         }
+        self.gripper_joint_names = {side: f"openarm_{side}_finger_joint1" for side in SIDES}
         self._lock = threading.Lock()
         self._q = {side: None for side in SIDES}
+        self._gripper = {side: None for side in SIDES}
         self._stamp = {side: None for side in SIDES}  # receive time, not sim time
 
         self._pubs = {
             side: self.create_publisher(Float64MultiArray, target.command_topic(side), 10)
             for side in SIDES
         }
+        self._gripper_pubs = {}
+        if target.gripper_controller is not None:
+            self._gripper_pubs = {
+                side: self.create_publisher(JointTrajectory, target.gripper_topic(side), 10)
+                for side in SIDES
+            }
         self.create_subscription(
             JointState, target.joint_states_topic, self._on_joint_states, 10
         )
@@ -131,6 +151,8 @@ class OpenArmROSInterface(Node):
                 if all(name in positions for name in names):
                     self._q[side] = np.array([positions[name] for name in names])
                     self._stamp[side] = now
+                if self.gripper_joint_names[side] in positions:
+                    self._gripper[side] = positions[self.gripper_joint_names[side]]
 
     def get_joint_positions(self, side, max_age):
         """Latest measured arm joint positions, or None if missing or older than max_age seconds."""
@@ -139,8 +161,21 @@ class OpenArmROSInterface(Node):
                 return None
             return self._q[side].copy()
 
+    def get_gripper_position(self, side):
+        """Latest measured gripper opening in meters, or None if not reported."""
+        with self._lock:
+            return self._gripper[side]
+
     def publish_arm_command(self, side, q):
         self._pubs[side].publish(Float64MultiArray(data=[float(v) for v in q]))
+
+    def publish_gripper_command(self, side, opening):
+        # One point, stamped "now" (zero stamp) with no time_from_start: with the gripper
+        # controllers' interpolation_method "none" it is applied on the next update.
+        point = JointTrajectoryPoint(positions=[float(opening)], time_from_start=Duration())
+        self._gripper_pubs[side].publish(
+            JointTrajectory(joint_names=[self.gripper_joint_names[side]], points=[point])
+        )
 
 
 class JointCommandLimiter:
@@ -166,17 +201,20 @@ class OpenArmROSController:
     It keeps the same interface (set_joint_goals, update_position_control, q_current_right/left,
     model, data) so the teleop loop and SEW's visualization work unchanged. Goals are wrapped
     and clipped to the joint limits, and the command sent to the robot moves toward them at no
-    more than max_joint_vel, starting from the measured pose. model/data mirror the measured
-    robot state and are only used for visualization.
+    more than max_joint_vel, starting from the measured pose. Gripper goals are mapped from the
+    hand opening as in SEW's controller and limited the same way (max_gripper_vel=None leaves
+    the grippers alone). model/data mirror the measured robot state and are only used for
+    visualization.
     """
 
     def __init__(self, ros_interface, mujoco_model, mujoco_data, max_joint_vel, control_dt,
-                 state_timeout=0.2):
+                 max_gripper_vel=None, state_timeout=0.2):
         self.ros = ros_interface
         self.model = mujoco_model
         self.data = mujoco_data
         self.control_dt = control_dt
         self.state_timeout = state_timeout
+        self.command_grippers = max_gripper_vel is not None
 
         # Reuse SEW's joint bookkeeping for the mirror model
         self._mirror = OpenArmMuJoCoController(mujoco_model, mujoco_data)
@@ -184,12 +222,21 @@ class OpenArmROSController:
             "right": self._mirror.right_arm_joint_names,
             "left": self._mirror.left_arm_joint_names,
         }
+        gripper_joint_names = {
+            "right": self._mirror.right_hand_joint_names[0],
+            "left": self._mirror.left_hand_joint_names[0],
+        }
         self._qpos_addrs = {
             "right": self._mirror.right_arm_qpos_addrs,
             "left": self._mirror.left_arm_qpos_addrs,
         }
+        self._hand_qpos_addrs = {
+            "right": self._mirror.right_hand_qpos_addrs,
+            "left": self._mirror.left_hand_qpos_addrs,
+        }
 
         self._limiters = {}
+        self._gripper_limiters = {}
         for side in SIDES:
             joint_ids = [
                 mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
@@ -198,10 +245,20 @@ class OpenArmROSController:
             limits = self.model.jnt_range[joint_ids]
             self._limiters[side] = JointCommandLimiter(limits[:, 0], limits[:, 1], max_joint_vel)
 
+            if self.command_grippers:
+                gripper_id = mujoco.mj_name2id(
+                    self.model, mujoco.mjtObj.mjOBJ_JOINT, gripper_joint_names[side]
+                )
+                lower, upper = self.model.jnt_range[gripper_id]
+                self._gripper_limiters[side] = JointCommandLimiter(lower, upper, max_gripper_vel)
+
         self._lock = threading.Lock()
         self._q_current = {side: None for side in SIDES}
         self._q_goal = {side: None for side in SIDES}
         self._q_cmd = {side: None for side in SIDES}
+        self._g_current = {side: None for side in SIDES}
+        self._g_goal = {side: None for side in SIDES}
+        self._g_cmd = {side: None for side in SIDES}
         self._last_stale_warning = 0.0
 
     @property
@@ -217,11 +274,15 @@ class OpenArmROSController:
         deadline = time.monotonic() + timeout
         while is_running() and time.monotonic() < deadline:
             q = {side: self.ros.get_joint_positions(side, self.state_timeout) for side in SIDES}
-            if all(v is not None for v in q.values()):
+            g = {side: self.ros.get_gripper_position(side) for side in SIDES}
+            grippers_ready = not self.command_grippers or all(v is not None for v in g.values())
+            if all(v is not None for v in q.values()) and grippers_ready:
                 with self._lock:
                     for side in SIDES:
                         self._q_current[side] = q[side]
                         self._q_cmd[side] = q[side].copy()
+                        self._g_current[side] = g[side]
+                        self._g_cmd[side] = g[side]
                 self._update_mirror()
                 return True
             time.sleep(0.05)
@@ -232,13 +293,29 @@ class OpenArmROSController:
         Set target joint angles from a dictionary.
 
         Args:
-            goals: Dictionary containing 'q_goal_right', 'q_goal_left'.
+            goals: Dictionary containing 'q_goal_right', 'q_goal_left', and optionally
+                'right_gripper_val', 'left_gripper_val' (hand opening from the XR device).
         """
+        # Map hand opening to gripper position with SEW's controller (offset and 0-0.044 m range)
+        gripper_vals = {
+            key: goals[key]
+            for key in ("right_gripper_val", "left_gripper_val")
+            if goals.get(key) is not None
+        }
+        if gripper_vals:
+            self._mirror.set_joint_goals(gripper_vals)
+        gripper_goals = {
+            "right": self._mirror.q_goal_right_hand,
+            "left": self._mirror.q_goal_left_hand,
+        }
+
         with self._lock:
             for side in SIDES:
                 q_goal = goals.get(f"q_goal_{side}")
                 if q_goal is not None:
                     self._q_goal[side] = np.asarray(q_goal, dtype=float)
+                if gripper_goals[side] is not None:
+                    self._g_goal[side] = float(gripper_goals[side][0])
 
     def goals_reached(self, tol=1e-3):
         """True once the command sent to both arms has reached their (clipped) goals."""
@@ -267,14 +344,15 @@ class OpenArmROSController:
                     stale.append(side)
                     continue
                 self._q_current[side] = q_measured
-                if self._q_goal[side] is None or self._q_cmd[side] is None:
-                    continue
+                if self._q_goal[side] is not None and self._q_cmd[side] is not None:
+                    q_goal = self._limit_goal(side)
+                    self._q_cmd[side] = self._limiters[side].step(
+                        self._q_cmd[side], q_goal, self.control_dt
+                    )
+                    self.ros.publish_arm_command(side, self._q_cmd[side])
 
-                q_goal = self._limit_goal(side)
-                self._q_cmd[side] = self._limiters[side].step(
-                    self._q_cmd[side], q_goal, self.control_dt
-                )
-                self.ros.publish_arm_command(side, self._q_cmd[side])
+                if self.command_grippers:
+                    self._update_gripper(side)
 
         if stale and time.monotonic() - self._last_stale_warning > 1.0:
             print(f"Warning: joint states stale for {', '.join(stale)} arm; holding last command.")
@@ -282,10 +360,29 @@ class OpenArmROSController:
 
         self._update_mirror()
 
+    def _update_gripper(self, side):
+        g_measured = self.ros.get_gripper_position(side)
+        if g_measured is not None:
+            self._g_current[side] = g_measured
+        if self._g_cmd[side] is None:
+            self._g_cmd[side] = self._g_current[side]
+        # Hold (send nothing) until the device reports a hand opening
+        if self._g_goal[side] is None or self._g_cmd[side] is None:
+            return
+
+        limiter = self._gripper_limiters[side]
+        self._g_cmd[side] = float(
+            limiter.step(self._g_cmd[side], limiter.clip(self._g_goal[side]), self.control_dt)
+        )
+        self.ros.publish_gripper_command(side, self._g_cmd[side])
+
     def _update_mirror(self):
         for side in SIDES:
             if self._q_current[side] is not None:
                 self.data.qpos[self._qpos_addrs[side]] = self._q_current[side]
+            if self._g_current[side] is not None:
+                # Both fingers follow finger_joint1, as on the robot
+                self.data.qpos[self._hand_qpos_addrs[side]] = self._g_current[side]
         mujoco.mj_forward(self.model, self.data)
 
 
@@ -369,6 +466,7 @@ def main():
     parser.add_argument("--playback_speed", default=1.0, type=float, help="CSV playback speed multiplier")
     parser.add_argument("--loop", action="store_true", help="Loop the CSV replay")
     parser.add_argument("--no_safety_filter", action="store_true", help="Disable SEW's self-collision filter")
+    parser.add_argument("--no_grippers", action="store_true", help="Leave the grippers alone")
     parser.add_argument("--no_viewer", action="store_true", help="Run without the MuJoCo viewer")
     args = parser.parse_args()
 
@@ -411,6 +509,8 @@ def main():
 
 def run_teleop(args, target, model, data, ros_interface, max_joint_vel, control_dt):
     """Ready pose, then SEW teleoperation until the viewer closes, Ctrl-C, or the replay ends."""
+    command_grippers = target.gripper_controller is not None and not args.no_grippers
+
     # Initialize teleoperation components
     print("Initializing teleoperation system...")
     try:
@@ -418,7 +518,10 @@ def run_teleop(args, target, model, data, ros_interface, max_joint_vel, control_
             device = CSVBodyPoseReplay(args.csv, args.playback_speed, args.loop)
         else:
             device = XRRTCBodyPoseDevice(env=None)
-        controller = OpenArmROSController(ros_interface, model, data, max_joint_vel, control_dt)
+        controller = OpenArmROSController(
+            ros_interface, model, data, max_joint_vel, control_dt,
+            max_gripper_vel=target.max_gripper_vel if command_grippers else None,
+        )
         ik_solver = OpenArmSEWSolver(safety_filter=not args.no_safety_filter, debug=False)
         print("Teleoperation system initialized successfully!")
     except Exception as e:
@@ -428,7 +531,10 @@ def run_teleop(args, target, model, data, ros_interface, max_joint_vel, control_
 
     print(f"Target '{args.target}': commands on {target.command_topic('right')} and "
           f"{target.command_topic('left')}, speed limit {max_joint_vel:.2f} rad/s")
-    if not target.has_grippers:
+    if command_grippers:
+        print(f"Grippers: {target.gripper_topic('right')} and {target.gripper_topic('left')}, "
+              f"speed limit {target.max_gripper_vel:.3f} m/s")
+    else:
         print(f"Grippers are not commanded on target '{args.target}'.")
 
     # Define ready poses (same as the SEW demo)

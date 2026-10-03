@@ -11,6 +11,14 @@
     right_arm_position_controller:
       type: forward_command_controller/ForwardCommandController
 
+    # Same gripper controllers as the hardware
+    # (mobile_bimanual_bringup/config/controllers/openarm_leader_controllers.yaml)
+    left_gripper_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    right_gripper_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
 /**/left_arm_position_controller:
   ros__parameters:
     joints:
@@ -36,3 +44,29 @@
       - openarm_right_joint7
 
     interface_name: position
+
+/**/left_gripper_controller:
+  ros__parameters:
+    joints:
+      - openarm_left_finger_joint1
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+    interpolation_method: "none"
+    constraints:
+      stopped_velocity_tolerance: 0.0
+      goal_time: 0.0
+
+/**/right_gripper_controller:
+  ros__parameters:
+    joints:
+      - openarm_right_finger_joint1
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+    interpolation_method: "none"
+    constraints:
+      stopped_velocity_tolerance: 0.0
+      goal_time: 0.0

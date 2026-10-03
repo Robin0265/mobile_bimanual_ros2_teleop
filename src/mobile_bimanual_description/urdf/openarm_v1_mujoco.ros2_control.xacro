@@ -33,6 +33,37 @@
     </joint>
   </xacro:macro>
 
+  <!--
+    Gripper: same interface as the hardware (openarm_<side>_finger_joint1,
+    opening 0-0.044 m). The MJCF has a second finger joint with its own
+    actuator, coupled to the first by an equality constraint, so it mimics
+    finger_joint1 to keep both actuators driving the same target.
+  -->
+  <xacro:macro name="gripper_joints" params="side">
+    <joint name="openarm_${side}_finger_joint1">
+      <command_interface name="position" />
+
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+
+      <state_interface name="velocity" />
+      <state_interface name="effort" />
+    </joint>
+
+    <joint name="openarm_${side}_finger_joint2">
+      <param name="mimic">openarm_${side}_finger_joint1</param>
+      <param name="multiplier">1</param>
+
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+
+      <state_interface name="velocity" />
+      <state_interface name="effort" />
+    </joint>
+  </xacro:macro>
+
   <ros2_control name="OpenArmMujocoSystem" type="system">
 
     <!--
@@ -54,6 +85,7 @@
     <xacro:arm_joint name="openarm_left_joint5" />
     <xacro:arm_joint name="openarm_left_joint6" />
     <xacro:arm_joint name="openarm_left_joint7" />
+    <xacro:gripper_joints side="left" />
 
     <!-- Right arm -->
     <xacro:arm_joint name="openarm_right_joint1" />
@@ -63,6 +95,7 @@
     <xacro:arm_joint name="openarm_right_joint5" />
     <xacro:arm_joint name="openarm_right_joint6" />
     <xacro:arm_joint name="openarm_right_joint7" />
+    <xacro:gripper_joints side="right" />
 
   </ros2_control>
 

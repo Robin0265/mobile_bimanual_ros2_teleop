@@ -1,0 +1,15 @@
+diff --git a/v1/openarm_bimanual.xml b/v1/openarm_bimanual.xml
+index fdcd9ea..45cb1a4 100644
+--- a/v1/openarm_bimanual.xml
++++ b/v1/openarm_bimanual.xml
+@@ -541,8 +541,8 @@ limitations under the License.
+     <motor name="left_joint5_ctrl" joint="openarm_left_joint5" class="motor_DM4310" />
+     <motor name="left_joint6_ctrl" joint="openarm_left_joint6" class="motor_DM4310" />
+     <motor name="left_joint7_ctrl" joint="openarm_left_joint7" class="motor_DM4310" />
+-    <motor name="left_finger1_ctrl" joint="openarm_left_finger_joint1" class="motor_finger" />
+-    <motor name="left_finger2_ctrl" joint="openarm_left_finger_joint2" class="motor_finger" />
++    <position name="left_finger1_ctrl" joint="openarm_left_finger_joint1" class="motor_finger" />
++    <position name="left_finger2_ctrl" joint="openarm_left_finger_joint2" class="motor_finger" />
+     <motor name="right_joint1_ctrl" joint="openarm_right_joint1" class="motor_DM8009" />
+     <motor name="right_joint2_ctrl" joint="openarm_right_joint2" class="motor_DM8009" />
+     <motor name="right_joint3_ctrl" joint="openarm_right_joint3" class="motor_DM4340" />

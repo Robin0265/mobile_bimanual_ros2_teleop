@@ -33,6 +33,8 @@ echo "=== Applying OpenArm source workarounds ==="
 
 ./scripts/patch_openarm_can20.sh
 ./scripts/patch_openarm_bringup.sh
+./scripts/patch_openarm_mujoco.sh
+./scripts/patch_openarm_gripper_direction.sh
 
 echo "=== Updating apt package index ==="
 sudo apt-get update

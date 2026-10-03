@@ -1,0 +1,11 @@
+--- a/assets/robot/openarm_v1.0/urdf/ros2_control/openarm.bimanual.ros2_control.xacro
++++ b/assets/robot/openarm_v1.0/urdf/ros2_control/openarm.bimanual.ros2_control.xacro
+@@ -60,6 +60,8 @@
+             <xacro:if value="${hand}">
+               <param name="kp_hand">${control_gains['hand']['kp']}</param>
+               <param name="kd_hand">${control_gains['hand']['kd']}</param>
++              <!-- Lab: the left gripper is mirrored and opens toward positive motor angles -->
++              <param name="gripper_open_sign">1</param>
+             </xacro:if>
+           </xacro:unless>
+         </hardware>

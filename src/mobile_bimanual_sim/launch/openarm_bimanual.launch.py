@@ -131,6 +131,8 @@ def generate_launch_description() -> LaunchDescription:
                     "joint_state_broadcaster",
                     "left_arm_position_controller",
                     "right_arm_position_controller",
+                    "left_gripper_controller",
+                    "right_gripper_controller",
                     "--param-file",
                     controllers_file,
                 ],
